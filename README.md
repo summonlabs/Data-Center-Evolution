@@ -458,7 +458,12 @@ in the tree:
     accepted-socket path inverted the same flag, so every accepted connection
     leaked into any child process. Windows was never affected, which is why the
     whole Windows matrix was green throughout.
-12. The multi-process suite validated its plan as soon as the site processes had
+12. Both suites that drive the shipped executable preferred a `Release` CLI over
+    a `Debug` one. A multi-configuration build tree holds both at once, so under
+    the Visual Studio generator a Debug test run exercised whichever
+    configuration had been built most recently. Each suite now tries the
+    configuration it was itself built as first.
+13. The multi-process suite validated its plan as soon as the site processes had
     printed their readiness lines, but a site is observable only once its
     process has connected. On a Release build the coordinator could therefore
     observe part of the fleet, and it correctly refused the plan with

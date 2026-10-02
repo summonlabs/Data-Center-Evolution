@@ -42,9 +42,18 @@ std::string find_cli() {
 #ifdef DCE_CLI_BUILD_DIR
   const std::string build = DCE_CLI_BUILD_DIR;
   candidates.push_back(build + "/tools/dce" + kExecutableSuffix);
+  // A multi-configuration tree holds several configurations at once, so the one
+  // this test binary was built as is tried first: the sites and the coordinator
+  // must be the executables that belong to the build under test.
+#if defined(NDEBUG)
   candidates.push_back(build + "/tools/Release/dce" + kExecutableSuffix);
+  candidates.push_back(build + "/tools/RelWithDebInfo/dce" + kExecutableSuffix);
+  candidates.push_back(build + "/tools/Debug/dce" + kExecutableSuffix);
+#else
   candidates.push_back(build + "/tools/Debug/dce" + kExecutableSuffix);
   candidates.push_back(build + "/tools/RelWithDebInfo/dce" + kExecutableSuffix);
+  candidates.push_back(build + "/tools/Release/dce" + kExecutableSuffix);
+#endif
 #endif
   const std::string self = dce::test::program_path();
   const std::size_t separator = self.find_last_of("/" "\\");
@@ -52,8 +61,13 @@ std::string find_cli() {
     const std::string directory = self.substr(0, separator);
     candidates.push_back(directory + "/dce" + kExecutableSuffix);
     candidates.push_back(directory + "/../tools/dce" + kExecutableSuffix);
+#if defined(NDEBUG)
     candidates.push_back(directory + "/Release/dce" + kExecutableSuffix);
     candidates.push_back(directory + "/Debug/dce" + kExecutableSuffix);
+#else
+    candidates.push_back(directory + "/Debug/dce" + kExecutableSuffix);
+    candidates.push_back(directory + "/Release/dce" + kExecutableSuffix);
+#endif
   }
   // A manual run (a developer compiling a suite by hand) has no build-tree
   // define, so the working directory is searched too.
