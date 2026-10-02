@@ -35,9 +35,10 @@ std::string name_of(const BasicId<Tag>& id) {
 std::string number(std::uint32_t value) { return text::u32_to_string(value); }
 std::string number(std::uint64_t value) { return text::u64_to_string(value); }
 
-// Whenever reconciliation does not simply agree, the coordinator issues the
-// next generation rather than adopting the site's counter: a generation that
-// may already have been published must never be reused.
+// Whenever reconciliation revises the coordinator's belief - advance, rewind or
+// hold - it issues the next generation rather than adopting the site's counter:
+// a generation that may already have been published must never be reused.
+// Agreement revises nothing, and a rejection revises nothing and issues nothing.
 Result<SiteGeneration> issue_next_generation(const SiteGeneration& generation) {
   const Result<SiteGeneration> advanced = generation.next();
   if (!advanced.ok()) {

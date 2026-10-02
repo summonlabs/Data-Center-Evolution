@@ -137,12 +137,13 @@ AuthorityCheck check_authority(const AuthorityToken& token, const EvolutionPlan&
         "not reached is rejected exactly like an older one";
     return check;
   }
-  if (token.plan_generation < current_generation) {
+  if (!(token.plan_generation == current_generation)) {
     check.verdict = AuthorityVerdict::fenced_generation;
     check.explanation =
         "token carries plan generation " + number(token.plan_generation.value()) +
         " but the plan is at generation " + number(current_generation.value()) +
-        "; a superseded generation may no longer act";
+        "; a token is only current for the generation that issued it, so a superseded generation "
+        "and a generation this coordinator has not reached are both refused";
     return check;
   }
   const SiteRecord* record = find_site_record(plan, token.site);

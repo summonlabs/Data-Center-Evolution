@@ -334,11 +334,13 @@ own belief to match reality **before** any new authority is issued.
 | same stage, different stage digest | `reject` |
 | same stage, earlier generation | `hold` (authority withheld) |
 
-Whenever reconciliation does not simply agree, the coordinator issues
-`next_generation = recorded_generation + 1` rather than adopting the site's
-counter, because a generation it may already have published must never be
-reused. Generations therefore stay monotonic across a rewind, and a stale
-completion from before the rewind cannot mutate the newer generation.
+Whenever reconciliation **revises** the coordinator's belief - on `advance`,
+`rewind` or `hold` - it issues `next_generation = recorded_generation + 1`
+rather than adopting the site's counter, because a generation it may already
+have published must never be reused. Generations therefore stay monotonic across
+a rewind, and a stale completion from before the rewind cannot mutate the newer
+generation. Agreement revises nothing and keeps the current generation; a
+rejection revises nothing and issues nothing at all.
 
 ## Persistence and recovery
 

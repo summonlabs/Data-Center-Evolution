@@ -43,12 +43,19 @@ enum class ReconciliationAction : std::uint8_t {
 
 [[nodiscard]] const char* to_string(ReconciliationAction action) noexcept;
 
-// FENCING. Whenever reconciliation does not simply agree, the coordinator
-// issues next_generation = coordinator_view.generation + 1 rather than
-// adopting the site's counter, because a generation the coordinator may
-// already have published must never be reused. Generations therefore stay
-// monotonic across a rewind, and a stale completion from before the rewind
-// can never mutate the newer generation.
+// FENCING. Whenever reconciliation REVISES the coordinator's belief - that is,
+// on advance, rewind or hold - it issues
+// next_generation = coordinator_view.generation + 1 rather than adopting the
+// site's counter, because a generation the coordinator may already have
+// published must never be reused. Generations therefore stay monotonic across
+// a rewind, and a stale completion from before the rewind can never mutate the
+// newer generation. Agreement revises nothing and keeps the current
+// generation; a rejection revises nothing and issues nothing at all.
+//
+// The outcome's evidence_digest covers the two encoded inputs, the
+// coordinator's view and the site's report. The plan generation and the epoch
+// also take part in the decision but are not part of the digest, so two
+// decisions made in different epochs over identical reports share a digest.
 struct ReconciliationOutcome {
   ReconciliationAction action{ReconciliationAction::hold};
   StageOrdinal agreed_stage;
