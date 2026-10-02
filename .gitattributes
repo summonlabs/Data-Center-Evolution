@@ -1,0 +1,12 @@
+# Normalise line endings so a checkout is identical on every platform, and
+# keep the stored form LF for every text file. Binary artefacts are never
+# touched by the text conversion.
+* text=auto eol=lf
+
+*.sln text eol=crlf
+*.vcxproj text eol=crlf
+*.vcxproj.filters text eol=crlf
+
+*.png binary
+*.jpg binary
+*.ico binary
