@@ -166,9 +166,15 @@ void print_field(const std::string& name, const std::string& value) {
 #else
   text = "unknown compiler";
 #endif
+#if defined(__VERSION__)
   text += " (__VERSION__: ";
   text += __VERSION__;
   text += ")";
+#else
+  // MSVC does not define __VERSION__; the compiler block above already
+  // identifies it by _MSC_VER, so there is nothing to add here.
+  text += " (no __VERSION__ macro)";
+#endif
   return text;
 }
 

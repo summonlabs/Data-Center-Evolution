@@ -8,6 +8,9 @@ name: ci
 #   * No timeouts anywhere: a hanging build or test is a defect to diagnose,
 #     never something to abort and report as passing.
 #   * Build caching is deliberately omitted.
+#   * Ninja is used on every platform, including Windows, so one set of commands
+#     covers all three compilers and no job depends on a particular Visual
+#     Studio generator name existing in the runner image.
 #   * The final `gate` job is the single required status check for branch
 #     protection; it fails whenever any job above it did not succeed.
 
@@ -20,8 +23,11 @@ permissions:
 
 jobs:
   # ---------------------------------------------------------------------------
-  # Windows / MSVC. Multi-config generator, so the build type travels through
-  # --config and ctest -C.
+  # Windows / MSVC, both configurations.
+  #
+  # The image's Visual Studio is discovered rather than assumed: a runner may
+  # ship a release newer than any generator name this CMake knows, and the
+  # failure that produces says nothing about which toolset is installed.
   # ---------------------------------------------------------------------------
   windows-msvc:
     name: windows-msvc (${{ matrix.build_type }})
@@ -33,30 +39,71 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Configure (Visual Studio 17 2022, x64)
-        run: >
-          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
-          -DDCE_BUILD_TESTS=ON
-          -DDCE_BUILD_TOOLS=ON
-          -DDCE_BUILD_EXAMPLES=ON
-          -DDCE_BUILD_BENCHMARKS=ON
-          -DDCE_WARNINGS_AS_ERRORS=ON
+      - name: Locate the Visual Studio C++ toolset and export its environment
+        shell: pwsh
+        run: |
+          # vswhere ships with the Visual Studio installer and reports the newest
+          # installation that actually provides the x64 C++ toolset, so nothing here
+          # depends on a generator name this CMake release happens to know.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            throw 'vswhere.exe was not found, so this image has no Visual Studio installer'
+          }
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) {
+            throw 'no Visual Studio installation provides the x64 C++ toolset'
+          }
+          $vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) {
+            throw "vcvars64.bat was not found at $vcvars"
+          }
+          Write-Host "Visual Studio C++ toolset: $installation"
+          $quoted = '"' + $vcvars + '"'
+          $lines = cmd /c "$quoted >nul 2>&1 && set"
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcvars64.bat failed with exit code $LASTEXITCODE"
+          }
+          # ASCII keeps the file free of a byte-order mark, which would corrupt
+          # the first variable name the runner reads back.
+          $written = 0
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+              $written = $written + 1
+            }
+          }
+          if ($written -lt 10) {
+            throw "only $written environment variables were exported, so vcvars64.bat did not run"
+          }
+          Write-Host "$written variables exported to every later step"
+
+      - name: Configure (Ninja, MSVC, ${{ matrix.build_type }})
+        shell: cmd
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} -DDCE_BUILD_TESTS=ON -DDCE_BUILD_TOOLS=ON -DDCE_BUILD_EXAMPLES=ON -DDCE_BUILD_BENCHMARKS=ON -DDCE_WARNINGS_AS_ERRORS=ON
+          if errorlevel 1 exit /b 1
 
       - name: Build (${{ matrix.build_type }})
-        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+        shell: cmd
+        run: |
+          cmake --build build --parallel
+          if errorlevel 1 exit /b 1
 
       - name: Test (${{ matrix.build_type }})
-        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+        shell: cmd
+        run: |
+          ctest --test-dir build --output-on-failure
+          if errorlevel 1 exit /b 1
 
   # ---------------------------------------------------------------------------
-  # Linux / GCC.
+  # Linux / gcc.
   # ---------------------------------------------------------------------------
   ubuntu-gcc:
     name: ubuntu-gcc (${{ matrix.build_type }})
     runs-on: ubuntu-latest
     env:
       CC: gcc
-      CXX: g++
+      CXX: gcc++
     strategy:
       fail-fast: false
       matrix:
@@ -81,7 +128,7 @@ jobs:
         run: ctest --test-dir build --output-on-failure
 
   # ---------------------------------------------------------------------------
-  # Linux / Clang.
+  # Linux / clang.
   # ---------------------------------------------------------------------------
   ubuntu-clang:
     name: ubuntu-clang (${{ matrix.build_type }})
@@ -151,8 +198,9 @@ jobs:
   # the runner temp directory with its own -S and -B and is never added to the
   # main build as a subdirectory.
   #
-  # bash is requested explicitly on both runner images (Git Bash ships with
-  # windows-latest) so one set of commands covers both generators.
+  # bash is requested explicitly on both images (Git Bash ships with
+  # windows-latest) so one set of commands covers both toolchains; on Windows
+  # the MSVC environment is exported to every later step first.
   # ---------------------------------------------------------------------------
   package-downstream:
     name: package-downstream (${{ matrix.label }})
@@ -163,29 +211,62 @@ jobs:
         include:
           - os: ubuntu-latest
             label: ubuntu-gcc
-            generator: Ninja
-            generator_flags: -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+            configure_flags: -DCMAKE_CXX_COMPILER=g++
             consumer_exe: downstream_consumer
           - os: windows-latest
             label: windows-msvc
-            generator: Visual Studio 17 2022
-            generator_flags: -A x64
-            consumer_exe: Release/downstream_consumer.exe
-    # Every path below is derived inside the step that uses it, from the
-    # runner's own environment variables. A job-level env block cannot
-    # reference the runner context, and deriving the paths where they are used
-    # keeps the commands identical on both images.
+            configure_flags: ""
+            consumer_exe: downstream_consumer.exe
     steps:
       - uses: actions/checkout@v4
+
+      - name: Locate the Visual Studio C++ toolset and export its environment
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          # vswhere ships with the Visual Studio installer and reports the newest
+          # installation that actually provides the x64 C++ toolset, so nothing here
+          # depends on a generator name this CMake release happens to know.
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          if (-not (Test-Path $vswhere)) {
+            throw 'vswhere.exe was not found, so this image has no Visual Studio installer'
+          }
+          $installation = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $installation) {
+            throw 'no Visual Studio installation provides the x64 C++ toolset'
+          }
+          $vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+          if (-not (Test-Path $vcvars)) {
+            throw "vcvars64.bat was not found at $vcvars"
+          }
+          Write-Host "Visual Studio C++ toolset: $installation"
+          $quoted = '"' + $vcvars + '"'
+          $lines = cmd /c "$quoted >nul 2>&1 && set"
+          if ($LASTEXITCODE -ne 0) {
+            throw "vcvars64.bat failed with exit code $LASTEXITCODE"
+          }
+          # ASCII keeps the file free of a byte-order mark, which would corrupt
+          # the first variable name the runner reads back.
+          $written = 0
+          foreach ($line in $lines) {
+            if ($line -match '^([^=]+)=(.*)$') {
+              "$($matches[1])=$($matches[2])" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+              $written = $written + 1
+            }
+          }
+          if ($written -lt 10) {
+            throw "only $written environment variables were exported, so vcvars64.bat did not run"
+          }
+          Write-Host "$written variables exported to every later step"
 
       - name: Configure the library (Release)
         shell: bash
         run: |
           set -euo pipefail
-          LIBRARY_BUILD="$RUNNER_TEMP/dce-library-build"
           # Only the library is packaged here; the consumer is a separate project.
-          cmake -S . -B "$LIBRARY_BUILD" \
-            -G "${{ matrix.generator }}" ${{ matrix.generator_flags }} \
+          cmake -S . -B "$RUNNER_TEMP/dce-library-build" \
+            -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            ${{ matrix.configure_flags }} \
             -DDCE_BUILD_TESTS=OFF \
             -DDCE_BUILD_TOOLS=OFF \
             -DDCE_BUILD_EXAMPLES=OFF \
@@ -196,28 +277,26 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build "$RUNNER_TEMP/dce-library-build" --config Release --parallel
+          cmake --build "$RUNNER_TEMP/dce-library-build" --parallel
 
       - name: Install the library into the prefix
         shell: bash
         run: |
           set -euo pipefail
-          cmake --install "$RUNNER_TEMP/dce-library-build" --config Release \
-            --prefix "$RUNNER_TEMP/dce-prefix"
+          cmake --install "$RUNNER_TEMP/dce-library-build" --prefix "$RUNNER_TEMP/dce-prefix"
 
       - name: Configure the downstream consumer against the prefix
         shell: bash
         run: |
           set -euo pipefail
-          # The consumer is configured from the runner temp directory, never
-          # from a directory inside the repository, so it cannot pick anything
-          # up from the library build tree.
+          # Configured from the runner temp directory, never from inside the
+          # repository, so nothing can be picked up from the library build tree.
           cd "$RUNNER_TEMP"
-          # Verbose build output is what makes the link line available for the
-          # provenance check below.
+          # Verbose build output is what makes the link line available below.
           cmake -S "$GITHUB_WORKSPACE/examples/downstream-consumer" \
             -B "$RUNNER_TEMP/downstream-consumer-build" \
-            -G "${{ matrix.generator }}" ${{ matrix.generator_flags }} \
+            -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            ${{ matrix.configure_flags }} \
             -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/dce-prefix" \
             -DCMAKE_VERBOSE_MAKEFILE=ON
 
@@ -225,14 +304,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cmake --build "$RUNNER_TEMP/downstream-consumer-build" --config Release --verbose 2>&1 \
+          cmake --build "$RUNNER_TEMP/downstream-consumer-build" --verbose 2>&1 \
             | tee "$RUNNER_TEMP/downstream-consumer-link.log"
 
       - name: Run the downstream consumer
         shell: bash
         run: |
           set -euo pipefail
-          consumer="$(printf '%s/%s' "$RUNNER_TEMP/downstream-consumer-build" "${{ matrix.consumer_exe }}" | tr '\\' '/')"
+          consumer="$RUNNER_TEMP/downstream-consumer-build/${{ matrix.consumer_exe }}"
           echo "running $consumer"
           "$consumer"
 
@@ -260,7 +339,7 @@ jobs:
             tr '\\' '/' < "$RUNNER_TEMP/downstream-consumer-link.log"
             while IFS= read -r generated; do
               tr '\\' '/' < "$generated"
-            done < <(find "$consumer_build" -type f \( -name 'build.ninja' -o -name '*.vcxproj' \))
+            done < <(find "$consumer_build" -type f -name 'build.ninja')
           } > "$evidence"
 
           if grep -F -q "$library_build" "$evidence"; then

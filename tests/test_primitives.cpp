@@ -147,8 +147,13 @@ DCE_TEST(primitives, checked_narrow_and_fits) {
   DCE_CHECK_EQ(dce::checked_narrow<std::uint32_t>(static_cast<std::uint64_t>(kU32Max) + 1ull), std::nullopt);
   DCE_CHECK_EQ(dce::checked_narrow<std::uint16_t>(65535ull), std::optional<std::uint16_t>(kU16Max));
   DCE_CHECK_EQ(dce::checked_narrow<std::uint16_t>(65536ull), std::nullopt);
-  DCE_CHECK_EQ(dce::checked_narrow<std::uint8_t>(0ull), std::optional<std::uint8_t>(0u));
-  DCE_CHECK_EQ(dce::checked_narrow<std::uint8_t>(255ull), std::optional<std::uint8_t>(255u));
+  // Built from values of exactly the destination type: MSVC reports the
+  // narrowing conversion inside the standard library's own optional
+  // constructor as a first-party warning, and warnings are errors here.
+  constexpr std::uint8_t kZero8 = 0;
+  constexpr std::uint8_t kMax8 = 255;
+  DCE_CHECK_EQ(dce::checked_narrow<std::uint8_t>(0ull), std::optional<std::uint8_t>(kZero8));
+  DCE_CHECK_EQ(dce::checked_narrow<std::uint8_t>(255ull), std::optional<std::uint8_t>(kMax8));
   DCE_CHECK_EQ(dce::checked_narrow<std::uint8_t>(256ull), std::nullopt);
 }
 
