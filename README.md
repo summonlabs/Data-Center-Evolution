@@ -612,4 +612,5 @@ Apache License 2.0; there is no CLA.
 
 ## License
 
-Apache License 2.0. Copyright 2026 Summon Software Labs. No telemetry transmission.
+Released under the [Apache License 2.0](LICENSE). Copyright 2026 Summon Software
+Labs. No telemetry transmission.
