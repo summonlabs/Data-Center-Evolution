@@ -312,15 +312,43 @@ DCE_TEST(multiprocess, rolling_evolution_across_independent_site_processes) {
   DCE_REQUIRE_OK(submitted);
   DCE_CHECK_EQ(submitted->status, dce::ErrorCode::ok);
 
-  dce::Result<dce::wire::AdminResponse> validated = validate(**client);
-  DCE_REQUIRE_OK(validated);
-  DCE_CHECK_EQ(validated->status, dce::ErrorCode::ok);
-  DCE_REQUIRE(validated->report.has_value());
-  DCE_CHECK_TRUE(validated->report->accepted());
-  if (!validated->report->accepted()) {
-    DCE_FAIL("the live coordinator refused a synthetic plan: " +
-             std::string(dce::to_string(validated->report->refusals.front().code)) + ": " +
-             validated->report->refusals.front().explanation);
+  // A site becomes observable only once its process has connected, and the
+  // plan is written against the whole fleet, so a validation that arrives
+  // before the last site has reported is legitimately refused. Only the two
+  // refusals that mean "this site has not connected yet" are retried, and the
+  // loop is bounded by a number of attempts rather than by a clock: any other
+  // refusal, or a fleet that never becomes fully observable, fails the test.
+  bool accepted = false;
+  std::string refusal_text;
+  for (std::size_t attempt = 0; attempt < 500 && !accepted; ++attempt) {
+    dce::Result<dce::wire::AdminResponse> validated = validate(**client);
+    DCE_REQUIRE_OK(validated);
+    DCE_CHECK_EQ(validated->status, dce::ErrorCode::ok);
+    DCE_REQUIRE(validated->report.has_value());
+    accepted = validated->report->accepted();
+    if (accepted) {
+      break;
+    }
+    refusal_text.clear();
+    bool waiting_for_observation = !validated->report->refusals.empty();
+    for (const auto& refusal : validated->report->refusals) {
+      if (refusal.code != dce::RefusalCode::source_state_stale &&
+          refusal.code != dce::RefusalCode::site_not_observed) {
+        waiting_for_observation = false;
+      }
+      if (!refusal_text.empty()) {
+        refusal_text += "; ";
+      }
+      refusal_text += std::string(dce::to_string(refusal.code)) + ": " + refusal.explanation;
+    }
+    if (!waiting_for_observation) {
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  DCE_CHECK_TRUE(accepted);
+  if (!accepted) {
+    DCE_FAIL("the live coordinator refused a synthetic plan: " + refusal_text);
   }
 
   DCE_REQUIRE_OK(lifecycle(**client, dce::LifecycleEvent::validate, true));
