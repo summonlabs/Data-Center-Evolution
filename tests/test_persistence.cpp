@@ -403,14 +403,26 @@ DCE_TEST(persistence, a_killed_writer_leaves_a_store_that_still_opens) {
   DCE_REQUIRE_OK(child);
 
   const std::string marker = dce::platform::join_path(root, "dce-crash-child-ready");
+  // The wait ends when the writer reports readiness or when it dies without
+  // doing so. It is deliberately not bounded by elapsed time: a slow machine
+  // must not turn a working crash writer into a failure, and a writer that
+  // exits without reporting is a defect however fast the machine is.
   bool ready = false;
-  for (std::size_t attempt = 0; attempt < 4000 && !ready; ++attempt) {
+  bool exited = false;
+  for (std::size_t attempt = 0; attempt < 200000 && !ready && !exited; ++attempt) {
     ready = dce::platform::stat_path(marker).ok();
-    if (!ready) {
+    if (ready) {
+      break;
+    }
+    dce::Result<bool> running = child->running();
+    DCE_REQUIRE_OK(running);
+    exited = !*running;
+    if (!exited) {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
   }
   DCE_CHECK_TRUE(ready);
+  DCE_CHECK_TRUE(!exited);
   if (!ready) {
     DCE_REQUIRE(child->terminate().ok());
     DCE_CHECK_TRUE(dce::platform::remove_tree(root).ok());

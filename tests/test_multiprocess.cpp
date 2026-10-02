@@ -177,6 +177,61 @@ dce::Result<dce::wire::AdminResponse> validate(dce::AdminClient& client) {
   return client.call(request);
 }
 
+// A site becomes observable only once its process has connected, and a plan is
+// written against the whole fleet, so a validation that arrives before the last
+// site has reported is legitimately refused. Only the two refusals that say
+// "this site has not connected yet" are waited out; every other refusal is
+// returned to the caller unchanged, so a real refusal is still a failure.
+//
+// The wait ends when the fleet stops becoming observable rather than when the
+// clock runs out, so a slow machine merely takes more observations, and
+// exhausting the wait is an error rather than a pass.
+dce::Result<dce::wire::AdminResponse> validate_until_observable(dce::AdminClient& client) {
+  constexpr std::size_t kMaxObservations = 20000;
+  constexpr std::size_t kIdleLimit = 1500;
+  std::size_t fewest_refusals = static_cast<std::size_t>(-1);
+  std::size_t idle = 0;
+  std::string refusals;
+  for (std::size_t attempt = 0; attempt < kMaxObservations; ++attempt) {
+    dce::Result<dce::wire::AdminResponse> response = validate(client);
+    if (!response.ok()) {
+      return response;
+    }
+    if (!response->report.has_value()) {
+      return dce::Error{dce::ErrorCode::malformed, "the coordinator validated without a report"};
+    }
+    if (response->report->accepted()) {
+      return response;
+    }
+    refusals.clear();
+    bool waiting_for_observation = !response->report->refusals.empty();
+    for (const auto& refusal : response->report->refusals) {
+      if (refusal.code != dce::RefusalCode::source_state_stale &&
+          refusal.code != dce::RefusalCode::site_not_observed) {
+        waiting_for_observation = false;
+      }
+      if (!refusals.empty()) {
+        refusals += "; ";
+      }
+      refusals += std::string(dce::to_string(refusal.code)) + ": " + refusal.explanation;
+    }
+    if (!waiting_for_observation) {
+      return response;
+    }
+    // One fewer refusal means one more site has reported.
+    if (response->report->refusals.size() < fewest_refusals) {
+      fewest_refusals = response->report->refusals.size();
+      idle = 0;
+    } else if (++idle > kIdleLimit) {
+      return dce::Error{dce::ErrorCode::indeterminate,
+                        "the fleet stopped becoming observable: " + refusals};
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  }
+  return dce::Error{dce::ErrorCode::indeterminate,
+                    "the fleet never became fully observable: " + refusals};
+}
+
 dce::Result<dce::wire::AdminResponse> lifecycle(dce::AdminClient& client,
                                                 dce::LifecycleEvent event, bool gates) {
   dce::wire::AdminRequest request;
@@ -194,11 +249,16 @@ dce::Result<dce::wire::AdminResponse> status_of(dce::AdminClient& client) {
   return client.call(request);
 }
 
-// Waits for the fleet to reach full progress. The loop is bounded by a number
-// of observed rounds rather than by a clock, so a rollout that genuinely stops
-// progressing fails the test instead of being killed.
+// Waits for the fleet to reach full progress. Progress, not elapsed time, is
+// what ends the wait: a slow machine simply takes more observations, while a
+// rollout that genuinely stops advancing is reported as a failure once the
+// recorded acceptances have not moved for a bounded number of observations.
+constexpr std::size_t kIdleObservations = 750;
+
 bool await_completion(dce::AdminClient& client, std::uint64_t sites, std::size_t budget,
                       std::uint64_t& observed_sites) {
+  std::uint64_t furthest = 0;
+  std::size_t idle = 0;
   for (std::size_t attempt = 0; attempt < budget; ++attempt) {
     if (attempt % 250 == 0) {
       stage("awaiting completion, probe " + std::to_string(attempt));
@@ -210,6 +270,14 @@ bool await_completion(dce::AdminClient& client, std::uint64_t sites, std::size_t
     observed_sites = response->sites_complete;
     if (response->sites_complete >= sites) {
       return true;
+    }
+    const std::uint64_t progress =
+        response->receipts + response->checkpoints + response->sites_complete;
+    if (progress > furthest) {
+      furthest = progress;
+      idle = 0;
+    } else if (++idle > kIdleObservations) {
+      return false;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
   }
@@ -326,43 +394,15 @@ DCE_TEST(multiprocess, rolling_evolution_across_independent_site_processes) {
   DCE_REQUIRE_OK(submitted);
   DCE_CHECK_EQ(submitted->status, dce::ErrorCode::ok);
 
-  // A site becomes observable only once its process has connected, and the
-  // plan is written against the whole fleet, so a validation that arrives
-  // before the last site has reported is legitimately refused. Only the two
-  // refusals that mean "this site has not connected yet" are retried, and the
-  // loop is bounded by a number of attempts rather than by a clock: any other
-  // refusal, or a fleet that never becomes fully observable, fails the test.
-  bool accepted = false;
-  std::string refusal_text;
-  for (std::size_t attempt = 0; attempt < 500 && !accepted; ++attempt) {
-    dce::Result<dce::wire::AdminResponse> validated = validate(**client);
-    DCE_REQUIRE_OK(validated);
-    DCE_CHECK_EQ(validated->status, dce::ErrorCode::ok);
-    DCE_REQUIRE(validated->report.has_value());
-    accepted = validated->report->accepted();
-    if (accepted) {
-      break;
-    }
-    refusal_text.clear();
-    bool waiting_for_observation = !validated->report->refusals.empty();
-    for (const auto& refusal : validated->report->refusals) {
-      if (refusal.code != dce::RefusalCode::source_state_stale &&
-          refusal.code != dce::RefusalCode::site_not_observed) {
-        waiting_for_observation = false;
-      }
-      if (!refusal_text.empty()) {
-        refusal_text += "; ";
-      }
-      refusal_text += std::string(dce::to_string(refusal.code)) + ": " + refusal.explanation;
-    }
-    if (!waiting_for_observation) {
-      break;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-  }
-  DCE_CHECK_TRUE(accepted);
-  if (!accepted) {
-    DCE_FAIL("the live coordinator refused a synthetic plan: " + refusal_text);
+  dce::Result<dce::wire::AdminResponse> validated = validate_until_observable(**client);
+  DCE_REQUIRE_OK(validated);
+  DCE_CHECK_EQ(validated->status, dce::ErrorCode::ok);
+  DCE_REQUIRE(validated->report.has_value());
+  DCE_CHECK_TRUE(validated->report->accepted());
+  if (!validated->report->accepted()) {
+    DCE_FAIL("the live coordinator refused a synthetic plan: " +
+             std::string(dce::to_string(validated->report->refusals.front().code)) + ": " +
+             validated->report->refusals.front().explanation);
   }
 
   DCE_REQUIRE_OK(lifecycle(**client, dce::LifecycleEvent::validate, true));
@@ -374,7 +414,7 @@ DCE_TEST(multiprocess, rolling_evolution_across_independent_site_processes) {
 
   std::uint64_t complete = 0;
   const bool finished =
-      await_completion(**client, scenario.fleet.profiles.size(), 2000, complete);
+      await_completion(**client, scenario.fleet.profiles.size(), 20000, complete);
   DCE_CHECK_TRUE(finished);
   if (!finished) {
     DCE_FAIL("only " + std::to_string(complete) + " of " +
@@ -433,7 +473,7 @@ DCE_TEST(multiprocess, coordinator_restart_fences_and_preserves_progress) {
   dce::Result<std::unique_ptr<dce::AdminClient>> client = connect_admin(port);
   DCE_REQUIRE_OK(client);
   DCE_REQUIRE_OK(submit(**client, scenario.fleet.plan));
-  dce::Result<dce::wire::AdminResponse> first_validation = validate(**client);
+  dce::Result<dce::wire::AdminResponse> first_validation = validate_until_observable(**client);
   DCE_REQUIRE_OK(first_validation);
   DCE_CHECK_TRUE(first_validation->report.has_value());
   DCE_CHECK_TRUE(first_validation->report->accepted());
@@ -480,7 +520,7 @@ DCE_TEST(multiprocess, coordinator_restart_fences_and_preserves_progress) {
   DCE_REQUIRE_OK(reaffirmed);
   DCE_CHECK_EQ(reaffirmed->status, dce::ErrorCode::ok);
   DCE_CHECK_TRUE(reaffirmed->plan_generation.value() > 1);
-  dce::Result<dce::wire::AdminResponse> reconfirmed = validate(**client_again);
+  dce::Result<dce::wire::AdminResponse> reconfirmed = validate_until_observable(**client_again);
   DCE_REQUIRE_OK(reconfirmed);
   DCE_CHECK_TRUE(reconfirmed->report.has_value());
   DCE_CHECK_TRUE(reconfirmed->report->accepted());
@@ -541,6 +581,13 @@ DCE_TEST(multiprocess, a_stopped_site_is_reconciled_when_it_returns) {
   dce::Result<std::unique_ptr<dce::AdminClient>> client = connect_admin(port);
   DCE_REQUIRE_OK(client);
   DCE_REQUIRE_OK(submit(**client, scenario.fleet.plan));
+  // The plan is written against all three sites, so it can only be validated
+  // once all three have been observed - including the one that has already
+  // stopped, whose report is durable rather than live.
+  dce::Result<dce::wire::AdminResponse> validated = validate_until_observable(**client);
+  DCE_REQUIRE_OK(validated);
+  DCE_CHECK_TRUE(validated->report.has_value());
+  DCE_CHECK_TRUE(validated->report->accepted());
   DCE_REQUIRE_OK(lifecycle(**client, dce::LifecycleEvent::validate, true));
   DCE_REQUIRE_OK(lifecycle(**client, dce::LifecycleEvent::stage, true));
   DCE_REQUIRE_OK(lifecycle(**client, dce::LifecycleEvent::begin_rollout, true));
@@ -561,7 +608,7 @@ DCE_TEST(multiprocess, a_stopped_site_is_reconciled_when_it_returns) {
   dce::Result<std::string> ready_again = (*returned)->await_line("SITE ");
   DCE_REQUIRE_OK(ready_again);
 
-  const bool finished = await_completion(**client, 3, 2000, complete);
+  const bool finished = await_completion(**client, 3, 20000, complete);
   DCE_CHECK_TRUE(finished);
   if (!finished) {
     DCE_FAIL("the returning site never caught up: " + std::to_string(complete) + " of 3 complete");
