@@ -387,6 +387,13 @@ void clear_close_on_exec(int descriptor) noexcept {
   }
 }
 
+void set_close_on_exec(int descriptor) noexcept {
+  const int flags = ::fcntl(descriptor, F_GETFD);
+  if (flags >= 0) {
+    (void)::fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC);
+  }
+}
+
 // Reports a failure that happened between fork() and exec() to the parent
 // through a close-on-exec pipe, then leaves immediately. Nothing here may
 // allocate or take a lock: the forked child owns only this thread.
@@ -415,8 +422,12 @@ struct PipeFds {
     if (::pipe(ends) != 0) {
       return false;
     }
-    clear_close_on_exec(ends[0]);
-    clear_close_on_exec(ends[1]);
+    // pipe() returns descriptors that survive exec, so the flag has to be set
+    // rather than cleared. Without it the exec status pipe's write end lives on
+    // in the child, the parent's read never reaches end of file, and starting a
+    // process blocks until that process exits.
+    set_close_on_exec(ends[0]);
+    set_close_on_exec(ends[1]);
     return true;
   }
 
@@ -2038,8 +2049,10 @@ Result<Socket> Socket::accept() {
   if (handle < 0) {
     return socket_error(ErrorCode::io_error, "accept a loopback connection", errno);
   }
-  // accept() does not inherit the close-on-exec flag of the listener.
-  clear_close_on_exec(handle);
+  // accept() does not inherit the close-on-exec flag of the listener, so the
+  // flag has to be set here: an accepted connection must not leak into a child
+  // process, where it would hold the peer open long after the server let go.
+  set_close_on_exec(handle);
 #endif
   implementation->handle = handle;
   Socket connection;
