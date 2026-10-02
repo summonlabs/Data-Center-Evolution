@@ -1,0 +1,288 @@
+name: ci
+
+# Cross-platform continuous integration for the Data Center Evolution library.
+#
+# Conventions that hold for the whole file:
+#   * Every command is one a reader can run locally, exactly as written.
+#   * No step writes to the repository, publishes artifacts or pushes anything.
+#   * No timeouts anywhere: a hanging build or test is a defect to diagnose,
+#     never something to abort and report as passing.
+#   * Build caching is deliberately omitted.
+#   * The final `gate` job is the single required status check for branch
+#     protection; it fails whenever any job above it did not succeed.
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Windows / MSVC. Multi-config generator, so the build type travels through
+  # --config and ctest -C.
+  # ---------------------------------------------------------------------------
+  windows-msvc:
+    name: windows-msvc (${{ matrix.build_type }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Visual Studio 17 2022, x64)
+        run: >
+          cmake -S . -B build -G "Visual Studio 17 2022" -A x64
+          -DDCE_BUILD_TESTS=ON
+          -DDCE_BUILD_TOOLS=ON
+          -DDCE_BUILD_EXAMPLES=ON
+          -DDCE_BUILD_BENCHMARKS=ON
+          -DDCE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build (${{ matrix.build_type }})
+        run: cmake --build build --config ${{ matrix.build_type }} --parallel
+
+      - name: Test (${{ matrix.build_type }})
+        run: ctest --test-dir build -C ${{ matrix.build_type }} --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Linux / GCC.
+  # ---------------------------------------------------------------------------
+  ubuntu-gcc:
+    name: ubuntu-gcc (${{ matrix.build_type }})
+    runs-on: ubuntu-latest
+    env:
+      CC: gcc
+      CXX: g++
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Ninja, gcc, ${{ matrix.build_type }})
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DDCE_BUILD_TESTS=ON
+          -DDCE_BUILD_TOOLS=ON
+          -DDCE_BUILD_EXAMPLES=ON
+          -DDCE_BUILD_BENCHMARKS=ON
+          -DDCE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build (${{ matrix.build_type }})
+        run: cmake --build build --parallel
+
+      - name: Test (${{ matrix.build_type }})
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Linux / Clang.
+  # ---------------------------------------------------------------------------
+  ubuntu-clang:
+    name: ubuntu-clang (${{ matrix.build_type }})
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Ninja, clang, ${{ matrix.build_type }})
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }}
+          -DDCE_BUILD_TESTS=ON
+          -DDCE_BUILD_TOOLS=ON
+          -DDCE_BUILD_EXAMPLES=ON
+          -DDCE_BUILD_BENCHMARKS=ON
+          -DDCE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build (${{ matrix.build_type }})
+        run: cmake --build build --parallel
+
+      - name: Test (${{ matrix.build_type }})
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Linux / Clang with AddressSanitizer and UndefinedBehaviorSanitizer.
+  # There are no suppression files: the first sanitizer report fails the job.
+  # ---------------------------------------------------------------------------
+  ubuntu-sanitizers:
+    name: ubuntu-sanitizers (clang, Ninja, Debug, ASan+UBSan)
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+      ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+      UBSAN_OPTIONS: halt_on_error=1:print_stacktrace=1
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure (Ninja, clang, Debug, ASan + UBSan)
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Debug
+          -DDCE_BUILD_TESTS=ON
+          -DDCE_BUILD_TOOLS=ON
+          -DDCE_BUILD_EXAMPLES=ON
+          -DDCE_BUILD_BENCHMARKS=ON
+          -DDCE_WARNINGS_AS_ERRORS=ON
+          -DDCE_ENABLE_ASAN=ON
+          -DDCE_ENABLE_UBSAN=ON
+
+      - name: Build (Debug, ASan + UBSan)
+        run: cmake --build build --parallel
+
+      - name: Test (Debug, ASan + UBSan)
+        run: ctest --test-dir build --output-on-failure
+
+  # ---------------------------------------------------------------------------
+  # Install the library and consume the installed package from the standalone
+  # project at examples/downstream-consumer. The consumer is configured from
+  # the runner temp directory with its own -S and -B and is never added to the
+  # main build as a subdirectory.
+  #
+  # bash is requested explicitly on both runner images (Git Bash ships with
+  # windows-latest) so one set of commands covers both generators.
+  # ---------------------------------------------------------------------------
+  package-downstream:
+    name: package-downstream (${{ matrix.label }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: ubuntu-gcc
+            generator: Ninja
+            generator_flags: -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=g++
+            consumer_exe: downstream_consumer
+          - os: windows-latest
+            label: windows-msvc
+            generator: Visual Studio 17 2022
+            generator_flags: -A x64
+            consumer_exe: Release/downstream_consumer.exe
+    env:
+      PREFIX: ${{ runner.temp }}/dce-prefix
+      LIBRARY_BUILD: ${{ runner.temp }}/dce-library-build
+      CONSUMER_SOURCE: ${{ github.workspace }}/examples/downstream-consumer
+      CONSUMER_BUILD: ${{ runner.temp }}/downstream-consumer-build
+      CONSUMER_LOG: ${{ runner.temp }}/downstream-consumer-link.log
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure the library (Release)
+        shell: bash
+        run: |
+          # Only the library is packaged here; the consumer is a separate project.
+          cmake -S . -B "$LIBRARY_BUILD" \
+            -G "${{ matrix.generator }}" ${{ matrix.generator_flags }} \
+            -DDCE_BUILD_TESTS=OFF \
+            -DDCE_BUILD_TOOLS=OFF \
+            -DDCE_BUILD_EXAMPLES=OFF \
+            -DDCE_BUILD_BENCHMARKS=OFF \
+            -DDCE_WARNINGS_AS_ERRORS=ON
+
+      - name: Build the library (Release)
+        shell: bash
+        run: cmake --build "$LIBRARY_BUILD" --config Release --parallel
+
+      - name: Install the library into the prefix
+        shell: bash
+        run: cmake --install "$LIBRARY_BUILD" --config Release --prefix "$PREFIX"
+
+      - name: Configure the downstream consumer against the prefix
+        shell: bash
+        working-directory: ${{ runner.temp }}
+        run: |
+          # Verbose build output is what makes the link line available for the
+          # provenance check below.
+          cmake -S "$CONSUMER_SOURCE" -B "$CONSUMER_BUILD" \
+            -G "${{ matrix.generator }}" ${{ matrix.generator_flags }} \
+            -DCMAKE_PREFIX_PATH="$PREFIX" \
+            -DCMAKE_VERBOSE_MAKEFILE=ON
+
+      - name: Build the downstream consumer
+        shell: bash
+        run: |
+          cmake --build "$CONSUMER_BUILD" --config Release --verbose 2>&1 | tee "$CONSUMER_LOG"
+
+      - name: Run the downstream consumer
+        shell: bash
+        run: |
+          consumer="$(printf '%s/%s' "$CONSUMER_BUILD" "${{ matrix.consumer_exe }}" | tr '\\' '/')"
+          echo "running $consumer"
+          "$consumer"
+
+      - name: Assert the consumer linked the installed library
+        shell: bash
+        run: |
+          set -euo pipefail
+          # MSVC tooling prints backslashes; every comparison below uses one
+          # separator style.
+          prefix="$(printf '%s' "$PREFIX" | tr '\\' '/')"
+          library_build="$(printf '%s' "$LIBRARY_BUILD" | tr '\\' '/')"
+          consumer_build="$(printf '%s' "$CONSUMER_BUILD" | tr '\\' '/')"
+          evidence="$(printf '%s' "$CONSUMER_LOG.normalized" | tr '\\' '/')"
+
+          installed_library="$(find "$prefix" -type f \( -name 'libdce.a' -o -name 'dce.lib' \) -print -quit)"
+          if [ -z "$installed_library" ]; then
+            echo "::error::no installed dce library found under $prefix"
+            exit 1
+          fi
+
+          # The verbose build log records the link line; the generated build
+          # system records the same inputs, which keeps this check independent
+          # of how much verbosity a generator supports.
+          {
+            tr '\\' '/' < "$CONSUMER_LOG"
+            while IFS= read -r generated; do
+              tr '\\' '/' < "$generated"
+            done < <(find "$consumer_build" -type f \( -name 'build.ninja' -o -name '*.vcxproj' \))
+          } > "$evidence"
+
+          if grep -F -q "$library_build" "$evidence"; then
+            echo "::error::downstream_consumer referenced the library build tree: $library_build"
+            exit 1
+          fi
+          if ! grep -F -q "$installed_library" "$evidence"; then
+            echo "::error::downstream_consumer did not link the installed library: $installed_library"
+            exit 1
+          fi
+          echo "downstream_consumer linked the installed library: $installed_library"
+
+  # ---------------------------------------------------------------------------
+  # Single required status check for branch protection. It runs even when an
+  # upstream job failed and fails unless every one of them succeeded.
+  # ---------------------------------------------------------------------------
+  gate:
+    name: gate
+    needs:
+      - windows-msvc
+      - ubuntu-gcc
+      - ubuntu-clang
+      - ubuntu-sanitizers
+      - package-downstream
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Report the result of every required job
+        run: echo '${{ toJSON(needs) }}'
+
+      - name: Fail when any required job did not succeed
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: |
+          echo "::error::At least one required job did not succeed."
+          exit 1
+
+      - name: Confirm every required job succeeded
+        run: echo "All required jobs succeeded."

@@ -1,0 +1,13 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# The exported target's interface names Threads::Threads, so a consumer that
+# only calls find_package(DataCenterEvolution) must still get that target
+# defined. Propagating the transitive dependency here is what makes the
+# installed package usable on its own.
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/DataCenterEvolutionTargets.cmake")
+
+check_required_components(DataCenterEvolution)

@@ -1,0 +1,37 @@
+# Build trees and generated intermediates
+/build/
+/build-*/
+/out/
+/install/
+/stage/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+cmake_install.cmake
+CTestTestfile.cmake
+Testing/
+*.obj
+*.o
+*.lib
+*.a
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.iobj
+*.ipdb
+
+# Editor and tooling scratch
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+compile_commands.json
+
+# Runtime scratch produced by the CLI and the test suites
+*.dce-store/
+*.dce-store.lock
+*.dces
+*.dcel
+scratch/
