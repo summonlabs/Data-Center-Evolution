@@ -115,7 +115,7 @@ DCE_TEST(cli, reports_its_version) {
   dce::Result<Run> run = run_cli(cli, {"version"});
   DCE_REQUIRE_OK(run);
   DCE_CHECK_EQ(run->exit_code, 0);
-  DCE_CHECK_TRUE(contains(run->output, "dce 1.0.0"));
+  DCE_CHECK_TRUE(contains(run->output, "dce 1.0.1"));
 }
 
 DCE_TEST(cli, rejects_a_missing_or_unknown_command) {

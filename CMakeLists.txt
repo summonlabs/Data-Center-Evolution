@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.20)
 
 project(DataCenterEvolution
-  VERSION 1.0.0
+  VERSION 1.0.1
   DESCRIPTION "DCCP boundary governing live evolution of a multi-site data-center control plane"
   HOMEPAGE_URL "https://github.com/summonlabs/Data-Center-Evolution"
   LANGUAGES CXX)

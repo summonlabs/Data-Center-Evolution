@@ -618,7 +618,7 @@ int main(int argc, char** argv) {
 
   const std::string group = argv[1];
   if (group == "version") {
-    std::cout << "dce 1.0.0\n";
+    std::cout << "dce 1.0.1\n";
     return 0;
   }
   if (group == "--help" || group == "-h" || group == "help") {

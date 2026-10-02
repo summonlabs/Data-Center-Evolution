@@ -448,8 +448,22 @@ in the tree:
    restarted coordinator refused its own recovered plan.
 9. The snapshot temporary file was created in the process working directory, so
    publishing it failed across volumes and left debris behind.
-10. `:` was accepted in identities that become file name components, which is
+10. `:` was accepted in identities that become filename components, which is
     an NTFS alternate-data-stream separator.
+11. On POSIX the pipe helper cleared the close-on-exec flag on a pipe that
+    `pipe()` had just returned without it, so the exec status pipe's write end
+    survived `execv` into the child. Starting a process therefore blocked until
+    that process exited: on Linux the crash test took exactly as long as the
+    child's own sleep, and the multi-process suite never finished at all. The
+    accepted-socket path inverted the same flag, so every accepted connection
+    leaked into any child process. Windows was never affected, which is why the
+    whole Windows matrix was green throughout.
+12. The multi-process suite validated its plan as soon as the site processes had
+    printed their readiness lines, but a site is observable only once its
+    process has connected. On a Release build the coordinator could therefore
+    observe part of the fleet, and it correctly refused the plan with
+    `source_state_stale` and `site_not_observed`. The suite now retries those
+    two refusals alone, bounded by attempts rather than by a clock.
 
 ### Real multi-process proof
 
@@ -479,6 +493,29 @@ independent consumer configured from outside the repository against the
 installed prefix — never the build tree — finds the package, links the installed
 archive, runs, and prints its own checks. CI repeats this on both Linux and
 Windows.
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push. Every job below completed
+successfully on the released commit:
+
+| Job | Configuration | Result |
+|---|---|---|
+| `windows-msvc` (Debug, Release) | Ninja, MSVC, `/W4 /permissive- /WX` | passed |
+| `ubuntu-gcc` (Debug, Release) | Ninja, gcc, `-Werror` | passed |
+| `ubuntu-clang` (Debug, Release) | Ninja, clang, `-Werror` | passed |
+| `ubuntu-sanitizers` | clang, Debug, AddressSanitizer + UndefinedBehaviorSanitizer, no suppression files | passed |
+| `package-downstream` (ubuntu-gcc) | install, then configure, build and run the consumer from outside the repository, asserting it linked the installed archive | passed |
+| `package-downstream` (windows-msvc) | the same, on the discovered MSVC toolset | passed |
+| `gate` | the single required status check | passed |
+
+Every leg runs the same fifteen suites, so the Linux persistence, process and
+socket paths are exercised exactly as the Windows ones are. The Windows jobs
+find the installed Visual Studio through `vswhere` and export its environment
+rather than naming a generator, so no job depends on a particular Visual Studio
+release being present in the runner image. No job sets `timeout-minutes` and no
+test is wrapped in a timeout: a hang is a defect, and one was found and fixed
+this way.
 
 ## Benchmarks
 
