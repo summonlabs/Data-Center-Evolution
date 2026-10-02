@@ -171,18 +171,18 @@ jobs:
             generator: Visual Studio 17 2022
             generator_flags: -A x64
             consumer_exe: Release/downstream_consumer.exe
-    env:
-      PREFIX: ${{ runner.temp }}/dce-prefix
-      LIBRARY_BUILD: ${{ runner.temp }}/dce-library-build
-      CONSUMER_SOURCE: ${{ github.workspace }}/examples/downstream-consumer
-      CONSUMER_BUILD: ${{ runner.temp }}/downstream-consumer-build
-      CONSUMER_LOG: ${{ runner.temp }}/downstream-consumer-link.log
+    # Every path below is derived inside the step that uses it, from the
+    # runner's own environment variables. A job-level env block cannot
+    # reference the runner context, and deriving the paths where they are used
+    # keeps the commands identical on both images.
     steps:
       - uses: actions/checkout@v4
 
       - name: Configure the library (Release)
         shell: bash
         run: |
+          set -euo pipefail
+          LIBRARY_BUILD="$RUNNER_TEMP/dce-library-build"
           # Only the library is packaged here; the consumer is a separate project.
           cmake -S . -B "$LIBRARY_BUILD" \
             -G "${{ matrix.generator }}" ${{ matrix.generator_flags }} \
@@ -194,32 +194,45 @@ jobs:
 
       - name: Build the library (Release)
         shell: bash
-        run: cmake --build "$LIBRARY_BUILD" --config Release --parallel
+        run: |
+          set -euo pipefail
+          cmake --build "$RUNNER_TEMP/dce-library-build" --config Release --parallel
 
       - name: Install the library into the prefix
         shell: bash
-        run: cmake --install "$LIBRARY_BUILD" --config Release --prefix "$PREFIX"
+        run: |
+          set -euo pipefail
+          cmake --install "$RUNNER_TEMP/dce-library-build" --config Release \
+            --prefix "$RUNNER_TEMP/dce-prefix"
 
       - name: Configure the downstream consumer against the prefix
         shell: bash
-        working-directory: ${{ runner.temp }}
         run: |
+          set -euo pipefail
+          # The consumer is configured from the runner temp directory, never
+          # from a directory inside the repository, so it cannot pick anything
+          # up from the library build tree.
+          cd "$RUNNER_TEMP"
           # Verbose build output is what makes the link line available for the
           # provenance check below.
-          cmake -S "$CONSUMER_SOURCE" -B "$CONSUMER_BUILD" \
+          cmake -S "$GITHUB_WORKSPACE/examples/downstream-consumer" \
+            -B "$RUNNER_TEMP/downstream-consumer-build" \
             -G "${{ matrix.generator }}" ${{ matrix.generator_flags }} \
-            -DCMAKE_PREFIX_PATH="$PREFIX" \
+            -DCMAKE_PREFIX_PATH="$RUNNER_TEMP/dce-prefix" \
             -DCMAKE_VERBOSE_MAKEFILE=ON
 
       - name: Build the downstream consumer
         shell: bash
         run: |
-          cmake --build "$CONSUMER_BUILD" --config Release --verbose 2>&1 | tee "$CONSUMER_LOG"
+          set -euo pipefail
+          cmake --build "$RUNNER_TEMP/downstream-consumer-build" --config Release --verbose 2>&1 \
+            | tee "$RUNNER_TEMP/downstream-consumer-link.log"
 
       - name: Run the downstream consumer
         shell: bash
         run: |
-          consumer="$(printf '%s/%s' "$CONSUMER_BUILD" "${{ matrix.consumer_exe }}" | tr '\\' '/')"
+          set -euo pipefail
+          consumer="$(printf '%s/%s' "$RUNNER_TEMP/downstream-consumer-build" "${{ matrix.consumer_exe }}" | tr '\\' '/')"
           echo "running $consumer"
           "$consumer"
 
@@ -229,10 +242,10 @@ jobs:
           set -euo pipefail
           # MSVC tooling prints backslashes; every comparison below uses one
           # separator style.
-          prefix="$(printf '%s' "$PREFIX" | tr '\\' '/')"
-          library_build="$(printf '%s' "$LIBRARY_BUILD" | tr '\\' '/')"
-          consumer_build="$(printf '%s' "$CONSUMER_BUILD" | tr '\\' '/')"
-          evidence="$(printf '%s' "$CONSUMER_LOG.normalized" | tr '\\' '/')"
+          prefix="$(printf '%s' "$RUNNER_TEMP/dce-prefix" | tr '\\' '/')"
+          library_build="$(printf '%s' "$RUNNER_TEMP/dce-library-build" | tr '\\' '/')"
+          consumer_build="$(printf '%s' "$RUNNER_TEMP/downstream-consumer-build" | tr '\\' '/')"
+          evidence="$(printf '%s' "$RUNNER_TEMP/downstream-consumer-link.log.normalized" | tr '\\' '/')"
 
           installed_library="$(find "$prefix" -type f \( -name 'libdce.a' -o -name 'dce.lib' \) -print -quit)"
           if [ -z "$installed_library" ]; then
@@ -244,7 +257,7 @@ jobs:
           # system records the same inputs, which keeps this check independent
           # of how much verbosity a generator supports.
           {
-            tr '\\' '/' < "$CONSUMER_LOG"
+            tr '\\' '/' < "$RUNNER_TEMP/downstream-consumer-link.log"
             while IFS= read -r generated; do
               tr '\\' '/' < "$generated"
             done < <(find "$consumer_build" -type f \( -name 'build.ninja' -o -name '*.vcxproj' \))
