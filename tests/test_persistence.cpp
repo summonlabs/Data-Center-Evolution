@@ -367,7 +367,22 @@ DCE_TEST(persistence, crash_writer_child) {
   // the on-disk state is exactly what a crash leaves behind. The wait is long
   // enough that the parent always wins the race and bounded so that an orphaned
   // child cannot linger.
-  std::this_thread::sleep_for(std::chrono::seconds(120));
+  std::this_thread::sleep_for(std::chrono::seconds(60));
+  {
+    // Reaching this point means the parent's kill did not take effect. The
+    // parent asserts the opposite, so a kill that silently fails is reported as
+    // a failure instead of merely making the suite slow.
+    dce::Result<dce::platform::File> finished =
+        dce::platform::File::open("dce-crash-child-finished", dce::platform::OpenMode::read_write);
+    if (finished.ok()) {
+      const std::string note = "the crash writer ran to completion";
+      std::vector<std::byte> bytes(note.size());
+      std::transform(note.begin(), note.end(), bytes.begin(),
+                     [](char c) { return static_cast<std::byte>(static_cast<unsigned char>(c)); });
+      (void)finished->write_at(0, bytes);
+      (void)finished->sync();
+    }
+  }
 }
 
 DCE_TEST(persistence, a_killed_writer_leaves_a_store_that_still_opens) {
@@ -406,6 +421,9 @@ DCE_TEST(persistence, a_killed_writer_leaves_a_store_that_still_opens) {
   DCE_REQUIRE(child->terminate().ok());
   dce::Result<int> exit_code = child->wait();
   DCE_CHECK_TRUE(exit_code.ok());
+  // The child only creates this file if it survives its own wait, so its
+  // absence is proof that the hard kill actually reached the process.
+  DCE_CHECK_TRUE(!dce::platform::stat_path(dce::platform::join_path(root, "dce-crash-child-finished")).ok());
 
   StoreOptions store_options;
   dce::Result<Store> store =

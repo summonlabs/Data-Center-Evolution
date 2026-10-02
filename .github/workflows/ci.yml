@@ -92,7 +92,7 @@ jobs:
       - name: Test (${{ matrix.build_type }})
         shell: cmd
         run: |
-          ctest --test-dir build --output-on-failure
+          ctest --test-dir build -V
           if errorlevel 1 exit /b 1
 
   # ---------------------------------------------------------------------------
@@ -103,7 +103,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CC: gcc
-      CXX: gcc++
+      CXX: g++
     strategy:
       fail-fast: false
       matrix:
@@ -125,7 +125,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (${{ matrix.build_type }})
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -V
 
   # ---------------------------------------------------------------------------
   # Linux / clang.
@@ -157,7 +157,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (${{ matrix.build_type }})
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -V
 
   # ---------------------------------------------------------------------------
   # Linux / Clang with AddressSanitizer and UndefinedBehaviorSanitizer.
@@ -190,7 +190,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Test (Debug, ASan + UBSan)
-        run: ctest --test-dir build --output-on-failure
+        run: ctest --test-dir build -V
 
   # ---------------------------------------------------------------------------
   # Install the library and consume the installed package from the standalone

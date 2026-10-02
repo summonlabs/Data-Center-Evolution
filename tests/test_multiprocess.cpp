@@ -7,6 +7,7 @@
 // is a genuine child process running the shipped dce executable.
 #include <algorithm>
 #include <chrono>
+#include <iostream>
 #include <cstdint>
 #include <cstdlib>
 #include <memory>
@@ -84,6 +85,12 @@ std::string temporary_root() {
 
 // A child process plus the lines it has emitted so far, so a readiness line can
 // be awaited without guessing at timing.
+// A hang must be attributable from the job log, so every stage announces
+// itself as it is reached. Nothing here is a timeout: the lines exist to say
+// where the suite got to, not to bound how long it may take.
+void stage(const std::string& text) {
+  std::cout << "[multiprocess] " << text << std::endl;
+}
 class Child {
  public:
   Child() = default;
@@ -111,6 +118,7 @@ class Child {
 
   // Blocks on the child's own output: no polling and no sleeping.
   dce::Result<std::string> await_line(const std::string& prefix) {
+    stage("waiting for " + program_ + " to print a line starting with " + prefix);
     while (true) {
       dce::Result<std::optional<std::string>> line = process_.read_line(4096);
       if (!line.ok()) {
@@ -178,6 +186,9 @@ dce::Result<dce::wire::AdminResponse> status_of(dce::AdminClient& client) {
 bool await_completion(dce::AdminClient& client, std::uint64_t sites, std::size_t budget,
                       std::uint64_t& observed_sites) {
   for (std::size_t attempt = 0; attempt < budget; ++attempt) {
+    if (attempt % 250 == 0) {
+      stage("awaiting completion, probe " + std::to_string(attempt));
+    }
     dce::Result<dce::wire::AdminResponse> response = status_of(client);
     if (!response.ok()) {
       return false;
@@ -265,6 +276,7 @@ std::uint16_t parse_listen_port(const std::string& line) {
 }  // namespace
 
 DCE_TEST(multiprocess, rolling_evolution_across_independent_site_processes) {
+  stage("test 1: four site processes roll forward one stage at a time");
   Scenario scenario;
   DCE_REQUIRE(prepare(scenario, 4, 2, 2, 41));
   const std::string cli = find_cli();
@@ -344,6 +356,7 @@ DCE_TEST(multiprocess, rolling_evolution_across_independent_site_processes) {
 }
 
 DCE_TEST(multiprocess, coordinator_restart_fences_and_preserves_progress) {
+  stage("test 2: a killed coordinator is restarted on the same store");
   Scenario scenario;
   DCE_REQUIRE(prepare(scenario, 3, 2, 2, 77));
   const std::string cli = find_cli();
@@ -447,6 +460,7 @@ DCE_TEST(multiprocess, coordinator_restart_fences_and_preserves_progress) {
 }
 
 DCE_TEST(multiprocess, a_stopped_site_is_reconciled_when_it_returns) {
+  stage("test 3: a stopped site is reconciled when it returns");
   Scenario scenario;
   DCE_REQUIRE(prepare(scenario, 3, 2, 2, 123));
   const std::string cli = find_cli();
