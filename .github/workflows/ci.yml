@@ -5,8 +5,6 @@ name: ci
 # Conventions that hold for the whole file:
 #   * Every command is one a reader can run locally, exactly as written.
 #   * No step writes to the repository, publishes artifacts or pushes anything.
-#   * No timeouts anywhere: a hanging build or test is a defect to diagnose,
-#     never something to abort and report as passing.
 #   * Build caching is deliberately omitted.
 #   * Ninja is used on every platform, including Windows, so one set of commands
 #     covers all three compilers and no job depends on a particular Visual

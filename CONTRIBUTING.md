@@ -41,10 +41,6 @@ that you cannot justify. Commit authorship is recorded by Git itself.
    ctest --test-dir build/debug --output-on-failure
    ```
 
-   Tests are run plainly. Do not add CTest timeouts, shell `timeout` wrappers,
-   watchdog-success logic, watchdog process-kill-as-pass behaviour, or CI
-   `timeout-minutes`. A test that hangs is a defect to diagnose, not something
-   to abort and call passing.
 
 3. Keep the public API strongly typed. Identities, plan generations, epochs,
    site generations, ordinals and external boundary references are distinct
