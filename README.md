@@ -72,13 +72,13 @@ string.
 Requires CMake 3.20 or newer and a C++20 compiler. There are **no third-party
 dependencies**: the standard library and the operating system only.
 
-`@
+```
 cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release
 
 cmake -S . -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build/debug
-`@
+```
 
 First-party code builds with **zero warnings** under
 `-Wall -Wextra -Wpedantic -Wshadow -Wnon-virtual-dtor -Wcast-qual -Wunused
@@ -100,9 +100,9 @@ Options:
 
 ## Test
 
-`@
+```
 ctest --test-dir build/debug --output-on-failure
-`@
+```
 
 Tests are run plainly. There are **no timeouts of any kind** anywhere in this
 repository: no CTest `TIMEOUT` property, no `timeout` wrapper, no
@@ -115,18 +115,18 @@ accepts `--list`, `--filter <substring>` and `--repeat <n>`.
 
 ## Install and consume
 
-`@
+```
 cmake --install build/release --prefix /some/prefix
-`@
+```
 
 An independent consumer uses the installed package and nothing from the build
 tree:
 
-`@cmake
+```cmake
 find_package(DataCenterEvolution CONFIG REQUIRED)
 add_executable(consumer main.cpp)
 target_link_libraries(consumer PRIVATE DataCenterEvolution::dce)
-`@
+```
 
 `examples/downstream-consumer` is exactly such a project. It is deliberately
 **not** part of this build: it is configured separately with its own source and
@@ -142,7 +142,7 @@ link the installed library. The package config propagates the transitive
 The `dce` executable is a real operator surface. Every decision it reports
 comes from the runtime, never from the tool.
 
-`@
+```
 dce version
 dce coordinator serve --store DIR [--port N]
 dce site serve --store DIR --profile FILE --coordinator-port N [--delegated] [--rounds N]
@@ -156,7 +156,7 @@ dce status --port N
 dce observe --port N --profiles DIR
 dce event --port N --event NAME [--gates-satisfied] [--all-cohorts] [--rollback-eligible]
 dce rollback-eligibility --port N --wave W
-`@
+```
 
 `coordinator serve` prints `LISTEN <port>` on stdout once it is accepting, and
 `site serve` prints `SITE <id> ready`. Those two lines are how a supervising
@@ -171,7 +171,7 @@ digest of that content; `dce plan show` prints the whole model.
 This sequence is the whole boundary, and it is what the multi-process suite
 performs with real child processes.
 
-`@
+```
 # 1. Generate a fleet and a plan written against it.
 dce synthetic --seed 20260101 --sites 6 --components 2 --cohorts 2 \
     --plan-out plan.dce --profiles-out profiles
@@ -203,14 +203,14 @@ dce status --port 52341
 #   receipts        24
 #   checkpoints     24
 #   refusals        0
-`@
+```
 
 `dce rollback-eligibility --port 52341 --wave 0` answers whether the rollout may
 still return to wave 0, and exits non-zero when it may not.
 
 ## Using the library
 
-`@cpp
+```cpp
 #include "dce/synthetic.hpp"
 #include "dce/validate.hpp"
 
@@ -240,7 +240,7 @@ if (!report.ok() || !report->accepted()) {
 // Rollout decisions are a pure function of the plan and the observed state.
 dce::RolloutState state = *dce::initial_rollout_state(fleet.plan);
 dce::RolloutAction action = *dce::next_rollout_action(fleet.plan, state);
-`@
+```
 
 The examples directory contains two complete programs: `evolve_fleet` drives a
 synthetic fleet through validation, the lifecycle and a full deterministic
@@ -288,9 +288,9 @@ actually reachable.
 
 ### Lifecycle
 
-`@
+```
 draft -> validated -> staged -> rolling_out -> validating -> completed
-`@
+```
 
 with `paused`, `blocked`, `reconciled`, `rolling_back`, `rolled_back`,
 `aborted` and `failed` reachable where they are legal.
@@ -576,22 +576,22 @@ in Debug, and no torn tail.
 
 Run it yourself:
 
-`@
+```
 cmake -S . -B build/release -G Ninja -DCMAKE_BUILD_TYPE=Release
 cmake --build build/release --target dce_bench
 build/release/benchmarks/dce_bench
-`@
+```
 
 ## Adjacent boundaries
 
-`@
+```
 facility runtimes  ->  complete sites  ->  federation  ->  DCCP evolution
    (identity,            (Site Control        (Data Center     (this boundary)
     topology, assets,     Plane)               Federation)
     capacity, power,
     cooling, policy,
     tenancy, ...)
-`@
+```
 
 Independently governed facility runtimes compose into complete sites;
 federation composes sites; evolution changes versions and capabilities without
