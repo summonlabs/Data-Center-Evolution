@@ -1,11 +1,11 @@
 # Data Center Evolution
 
-Data Center Evolution (DCE) is the DCCP boundary that governs **live evolution**
+Data Center Evolution (DCE) governs **live evolution**
 of a running multi-site data-center control plane: moving a fleet from one
 compatible system state to another across versions, capabilities, sites, policy
 generations and lower-layer dependencies, without a global shutdown.
 
-It is the final boundary of the Data Center Control Plane. It owns evolution
+It owns evolution
 plans, compatibility staging, rollout generations, gates, rollback eligibility,
 migration authority and the evidence that a heterogeneous fleet can move
 between control-plane versions safely.
