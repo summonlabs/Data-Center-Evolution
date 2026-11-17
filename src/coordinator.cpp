@@ -346,15 +346,23 @@ struct Coordinator::Impl {
   }
 
   [[nodiscard]] Status append(RecordType type, const CanonicalWriter& writer) {
+    // A snapshot that is due is taken here, before the next record is appended, and
+    // never after it. Every caller applies a record to memory only once this function
+    // has returned, so a snapshot taken after the append was an image without the
+    // record that had just been committed. The store stamps a snapshot as covering the
+    // whole committed log and retires that log, so the record was in neither after a
+    // restart. Here memory holds everything the log holds. A snapshot that cannot be
+    // written leaves the log as it was, so it does not fail the record that follows.
+    if (options.snapshot_every_records != 0 &&
+        records_since_snapshot >= options.snapshot_every_records) {
+      const Status snapshotted = write_snapshot();
+      (void)snapshotted;
+    }
     Result<persist::CommitReceipt> receipt = store.append(type, writer.bytes());
     if (!receipt.ok()) {
       return receipt.error();
     }
     ++records_since_snapshot;
-    if (options.snapshot_every_records != 0 &&
-        records_since_snapshot >= options.snapshot_every_records) {
-      DCE_TRY(write_snapshot());
-    }
     return Status{};
   }
 
@@ -789,6 +797,16 @@ Result<ReceiptOutcome> Coordinator::accept_migration(const MigrationReceipt& rec
   CanonicalWriter receipt_writer;
   DCE_TRY(codec::put(receipt_writer, receipt));
   DCE_TRY(impl_->append(RecordType::migration_receipt, receipt_writer));
+  // The receipt is committed, so it is applied before the checkpoint record is
+  // appended: a snapshot taken on the way into that append has to hold it.
+  impl_->receipts.push_back(receipt);
+  if (SiteProgress* progress = impl_->find_progress(receipt.site); progress != nullptr) {
+    if (progress->accepted_stage < receipt.stage) {
+      progress->accepted_stage = receipt.stage;
+    }
+    progress->generation = receipt.accepted_generation;
+    progress->in_flight = false;
+  }
 
   StageCheckpoint checkpoint;
   const std::string checkpoint_name =
@@ -816,15 +834,7 @@ Result<ReceiptOutcome> Coordinator::accept_migration(const MigrationReceipt& rec
   DCE_TRY(codec::put(checkpoint_writer, checkpoint));
   DCE_TRY(impl_->append(RecordType::stage_checkpoint, checkpoint_writer));
 
-  impl_->receipts.push_back(receipt);
   impl_->checkpoints.push_back(checkpoint);
-  if (SiteProgress* progress = impl_->find_progress(receipt.site); progress != nullptr) {
-    if (progress->accepted_stage < receipt.stage) {
-      progress->accepted_stage = receipt.stage;
-    }
-    progress->generation = receipt.accepted_generation;
-    progress->in_flight = false;
-  }
   impl_->refresh_wave();
   return *outcome;
 }

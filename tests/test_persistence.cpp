@@ -13,8 +13,10 @@
 #include <thread>
 #include <vector>
 
+#include "dce/node.hpp"
 #include "dce/platform.hpp"
 #include "dce/store.hpp"
+#include "dce/synthetic.hpp"
 #include "dce/text.hpp"
 #include "harness.hpp"
 
@@ -451,4 +453,53 @@ DCE_TEST(persistence, a_killed_writer_leaves_a_store_that_still_opens) {
   }
   DCE_REQUIRE(store->close().ok());
   DCE_CHECK_TRUE(dce::platform::remove_tree(root).ok());
+}
+
+DCE_TEST(persistence, a_coordinator_snapshot_holds_the_record_that_made_it_due) {
+  const std::string directory = temporary_root("coordinator-snapshot");
+  DCE_REQUIRE(dce::platform::make_directories(directory).ok());
+
+  dce::SyntheticFleetOptions fleet_options;
+  fleet_options.sites = 4;
+  fleet_options.components = 2;
+  fleet_options.cohorts = 2;
+  fleet_options.seed = 31;
+  dce::Result<dce::SyntheticFleet> fleet = dce::make_synthetic_fleet(fleet_options);
+  DCE_REQUIRE_OK(fleet);
+
+  // A snapshot after every record, so each record is the one that makes a snapshot
+  // due. A snapshot covers the whole committed log and retires it, so whatever the
+  // image leaves out is gone at the next restart.
+  dce::CoordinatorOptions options;
+  options.store_directory = directory;
+  options.snapshot_every_records = 1;
+  {
+    dce::Result<std::unique_ptr<dce::Coordinator>> coordinator = dce::Coordinator::open(options);
+    DCE_REQUIRE_OK(coordinator);
+    DCE_REQUIRE((*coordinator)->record_observation(fleet->initial_observations).ok());
+    DCE_REQUIRE((*coordinator)->close().ok());
+  }
+  {
+    dce::Result<std::unique_ptr<dce::Coordinator>> coordinator = dce::Coordinator::open(options);
+    DCE_REQUIRE_OK(coordinator);
+    dce::Result<std::vector<dce::SiteObservation>> observed = (*coordinator)->observations();
+    DCE_REQUIRE_OK(observed);
+    DCE_CHECK_EQ(observed->size(), fleet->initial_observations.size());
+    DCE_CHECK_TRUE((*coordinator)->status().observed_state_digest == fleet->observation_digest);
+
+    DCE_REQUIRE_OK((*coordinator)->submit_plan(fleet->plan));
+    DCE_REQUIRE((*coordinator)->close().ok());
+  }
+  {
+    dce::Result<std::unique_ptr<dce::Coordinator>> coordinator = dce::Coordinator::open(options);
+    DCE_REQUIRE_OK(coordinator);
+    const dce::CoordinatorStatus status = (*coordinator)->status();
+    DCE_CHECK_TRUE(status.has_plan);
+    DCE_CHECK_EQ(status.sites, fleet->initial_observations.size());
+    dce::Result<std::vector<dce::SiteObservation>> observed = (*coordinator)->observations();
+    DCE_REQUIRE_OK(observed);
+    DCE_CHECK_EQ(observed->size(), fleet->initial_observations.size());
+    DCE_REQUIRE((*coordinator)->close().ok());
+  }
+  DCE_CHECK_TRUE(dce::platform::remove_tree(directory).ok());
 }
