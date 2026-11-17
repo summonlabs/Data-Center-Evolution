@@ -2160,8 +2160,12 @@ Status Socket::shutdown_both() {
   }
   DCE_TRY(initialize_networking());
 #if defined(_WIN32)
-  if (::shutdown(impl_->handle, SD_BOTH) != 0) {
-    const int error_number = last_socket_error();
+  const int outcome = ::shutdown(impl_->handle, SD_BOTH);
+  const int error_number = outcome != 0 ? last_socket_error() : 0;
+  // shutdown() only fails the calls that follow it. A receive that another
+  // thread has already blocked on this socket is ended by cancelling it.
+  (void)::CancelIoEx(reinterpret_cast<HANDLE>(impl_->handle), nullptr);
+  if (outcome != 0) {
     if (error_number == WSAENOTCONN || error_number == WSAECONNRESET || error_number == WSAECONNABORTED) {
       return Status{};
     }

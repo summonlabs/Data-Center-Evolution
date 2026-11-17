@@ -1220,6 +1220,11 @@ struct CoordinatorServer::Impl {
   std::atomic<bool> stopping_workers{false};
   std::atomic<std::size_t> connected{0};
   std::uint16_t port{0};
+  // The connections the workers are serving. A connection is listed before it
+  // is served and unlisted, under the mutex, before it is closed, so that a
+  // stop can end a read that is waiting on a peer which stays silent.
+  std::mutex serving_mutex;
+  std::vector<platform::Socket*> serving;
 
   // A self-connection wakes a blocking accept() without a signal handler and
   // without any assumption about how a shutdown unblocks a listener.
@@ -1229,6 +1234,20 @@ struct CoordinatorServer::Impl {
       return wake.error();
     }
     return wake->close();
+  }
+
+  // Ends the accept loop and every exchange in progress. The workers are
+  // joined by serve(), which they could not reach while they were still
+  // waiting to read from a connected peer.
+  void request_stop() {
+    if (stop_requested.exchange(true)) {
+      return;
+    }
+    (void)wake_listener();
+    std::lock_guard<std::mutex> guard(serving_mutex);
+    for (platform::Socket* socket : serving) {
+      (void)socket->shutdown_both();
+    }
   }
 
   void accept_loop() {
@@ -1270,11 +1289,20 @@ struct CoordinatorServer::Impl {
         socket = std::move(queue.front());
         queue.pop_front();
       }
-      serve_connection(std::move(socket));
+      {
+        std::lock_guard<std::mutex> guard(serving_mutex);
+        if (stop_requested.load()) {
+          continue;
+        }
+        serving.push_back(&socket);
+      }
+      serve_connection(socket);
+      std::lock_guard<std::mutex> guard(serving_mutex);
+      serving.erase(std::find(serving.begin(), serving.end(), &socket));
     }
   }
 
-  void serve_connection(platform::Socket socket) {
+  void serve_connection(platform::Socket& socket) {
     std::uint16_t kind = 0;
     Result<std::vector<std::byte>> frame = wire::read_frame(socket, kind);
     if (!frame.ok()) {
@@ -1309,6 +1337,11 @@ struct CoordinatorServer::Impl {
         return;
       }
       if (!wire::write_frame(socket, wire::kAdminFrameKind, *body).ok()) {
+        return;
+      }
+      if (request->op == wire::AdminOp::stop) {
+        // The acknowledgement has been sent; now the stop is carried out.
+        request_stop();
         return;
       }
       std::uint16_t kind = 0;
@@ -1571,11 +1604,7 @@ void CoordinatorServer::request_stop() {
   if (impl_ == nullptr) {
     return;
   }
-  const bool already = impl_->stop_requested.exchange(true);
-  if (already) {
-    return;
-  }
-  (void)impl_->wake_listener();
+  impl_->request_stop();
 }
 
 Coordinator& CoordinatorServer::coordinator() { return *impl_->coordinator; }

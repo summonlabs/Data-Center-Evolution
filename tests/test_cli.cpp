@@ -3,13 +3,18 @@
 // The shipped executable is a real operator surface, so it is exercised as one:
 // every command is run as a child process and its actual output is inspected.
 #include <algorithm>
+#include <chrono>
 #include <cstdlib>
+#include <future>
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "dce/codec.hpp"
+#include "dce/node.hpp"
 #include "dce/platform.hpp"
+#include "dce/protocol.hpp"
 #include "dce/text.hpp"
 #include "harness.hpp"
 
@@ -222,4 +227,86 @@ DCE_TEST(cli, rejects_an_unknown_lifecycle_event) {
   DCE_REQUIRE_OK(run);
   DCE_CHECK_TRUE(run->exit_code != 0);
   DCE_CHECK_TRUE(contains(run->output, "unknown lifecycle event"));
+}
+
+// Regression: serve() joins the workers, and a worker serves a connection until
+// its peer closes it. A stop request woke only the listener, so serve() kept
+// waiting for as long as any peer stayed connected. The operator here has been
+// answered once and keeps its connection open.
+DCE_TEST(cli, a_stop_request_ends_serving_while_an_operator_stays_connected) {
+  const std::string root = temporary_root("server-stop");
+  DCE_REQUIRE(dce::platform::make_directories(root).ok());
+  dce::CoordinatorServerOptions options;
+  options.coordinator.store_directory = root;
+  dce::Result<std::unique_ptr<dce::CoordinatorServer>> server = dce::CoordinatorServer::start(options);
+  DCE_REQUIRE_OK(server);
+  dce::Result<std::uint16_t> port = (*server)->port();
+  DCE_REQUIRE_OK(port);
+
+  std::promise<void> finished;
+  std::future<void> done = finished.get_future();
+  std::thread serving([&] {
+    (void)(*server)->serve();
+    finished.set_value();
+  });
+
+  dce::Result<std::unique_ptr<dce::AdminClient>> admin = dce::AdminClient::connect(*port);
+  bool answered = false;
+  if (admin.ok()) {
+    dce::wire::AdminRequest status;
+    status.op = dce::wire::AdminOp::status;
+    status.request_id = 1;
+    answered = (*admin)->call(status).ok();
+  }
+
+  (*server)->request_stop();
+  const bool returned = done.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  // Closing the operator's connection releases a serve() that still waits on it.
+  if (admin.ok()) {
+    (void)(*admin)->close();
+  }
+  serving.join();
+  DCE_CHECK_TRUE(answered);
+  DCE_CHECK_TRUE(returned);
+  (*server).reset();
+  DCE_CHECK_TRUE(dce::platform::remove_tree(root).ok());
+}
+
+// Regression: the stop operation was acknowledged and then not carried out.
+DCE_TEST(cli, an_acknowledged_stop_operation_stops_the_server) {
+  const std::string root = temporary_root("server-admin-stop");
+  DCE_REQUIRE(dce::platform::make_directories(root).ok());
+  dce::CoordinatorServerOptions options;
+  options.coordinator.store_directory = root;
+  dce::Result<std::unique_ptr<dce::CoordinatorServer>> server = dce::CoordinatorServer::start(options);
+  DCE_REQUIRE_OK(server);
+  dce::Result<std::uint16_t> port = (*server)->port();
+  DCE_REQUIRE_OK(port);
+
+  std::promise<void> finished;
+  std::future<void> done = finished.get_future();
+  std::thread serving([&] {
+    (void)(*server)->serve();
+    finished.set_value();
+  });
+
+  dce::Result<std::unique_ptr<dce::AdminClient>> admin = dce::AdminClient::connect(*port);
+  bool acknowledged = false;
+  if (admin.ok()) {
+    dce::wire::AdminRequest stop;
+    stop.op = dce::wire::AdminOp::stop;
+    stop.request_id = 1;
+    const dce::Result<dce::wire::AdminResponse> response = (*admin)->call(stop);
+    acknowledged = response.ok() && response->status == dce::ErrorCode::ok;
+    (void)(*admin)->close();
+  }
+
+  const bool returned = done.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  // request_stop() releases a serve() that is still running.
+  (*server)->request_stop();
+  serving.join();
+  DCE_CHECK_TRUE(acknowledged);
+  DCE_CHECK_TRUE(returned);
+  (*server).reset();
+  DCE_CHECK_TRUE(dce::platform::remove_tree(root).ok());
 }
