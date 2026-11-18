@@ -167,6 +167,10 @@ struct SiteNode::Impl {
   bool connected_{false};
   bool stop_requested_{false};
   bool running_{false};
+  // The connection of the round in progress, so that a stop can end a read
+  // that is waiting on a coordinator which does not answer. Set and cleared
+  // under mutex_, and cleared before the connection is closed.
+  platform::Socket* round_socket_{nullptr};
 };
 
 SiteNode::Impl::~Impl() {
@@ -639,7 +643,19 @@ Result<bool> SiteNode::Impl::run_once() {
     connect_failures_ = 0;
   }
   platform::Socket socket = std::move(connected).value();
-  return exchange(socket);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (stop_requested_) {
+      return false;
+    }
+    round_socket_ = &socket;
+  }
+  Result<bool> outcome = exchange(socket);
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    round_socket_ = nullptr;
+  }
+  return outcome;
 }
 
 Result<bool> SiteNode::Impl::exchange(platform::Socket& socket) {
@@ -782,6 +798,12 @@ void SiteNode::Impl::request_stop() {
   {
     std::lock_guard<std::mutex> lock(mutex_);
     stop_requested_ = true;
+    // A round in progress reads the coordinator's answers with no bound. End
+    // that read: the round then fails like any lost connection, and the loop
+    // sees the stop.
+    if (round_socket_ != nullptr) {
+      (void)round_socket_->shutdown_both();
+    }
   }
   wake_.notify_all();
 }

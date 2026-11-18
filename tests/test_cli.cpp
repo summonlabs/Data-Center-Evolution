@@ -15,6 +15,7 @@
 #include "dce/node.hpp"
 #include "dce/platform.hpp"
 #include "dce/protocol.hpp"
+#include "dce/synthetic.hpp"
 #include "dce/text.hpp"
 #include "harness.hpp"
 
@@ -269,6 +270,57 @@ DCE_TEST(cli, a_stop_request_ends_serving_while_an_operator_stays_connected) {
   DCE_CHECK_TRUE(answered);
   DCE_CHECK_TRUE(returned);
   (*server).reset();
+  DCE_CHECK_TRUE(dce::platform::remove_tree(root).ok());
+}
+
+// Regression: a site's stop request has to end a round that is waiting on the
+// coordinator. The coordinator here is a listener that accepts the site's
+// connection and never answers it.
+DCE_TEST(cli, a_site_stop_request_ends_a_round_waiting_on_the_coordinator) {
+  const std::string root = temporary_root("site-stop");
+  DCE_REQUIRE(dce::platform::make_directories(root).ok());
+  dce::SyntheticFleetOptions fleet_options;
+  fleet_options.sites = 4;
+  fleet_options.components = 2;
+  fleet_options.cohorts = 2;
+  fleet_options.seed = 31;
+  dce::Result<dce::SyntheticFleet> fleet = dce::make_synthetic_fleet(fleet_options);
+  DCE_REQUIRE_OK(fleet);
+  DCE_REQUIRE(!fleet->profiles.empty());
+
+  dce::Result<dce::platform::Socket> listener = dce::platform::Socket::listen_loopback(0);
+  DCE_REQUIRE_OK(listener);
+  dce::Result<std::uint16_t> port = listener->local_port();
+  DCE_REQUIRE_OK(port);
+
+  dce::SiteNodeOptions options;
+  options.store_directory = root;
+  options.profile = fleet->profiles.front();
+  options.coordinator_port = *port;
+  dce::Result<std::unique_ptr<dce::SiteNode>> node = dce::SiteNode::start(options);
+  DCE_REQUIRE_OK(node);
+
+  std::promise<void> finished;
+  std::future<void> done = finished.get_future();
+  std::thread running([&] {
+    (void)(*node)->run();
+    finished.set_value();
+  });
+
+  // The accepted connection is the site's round: it says hello and waits.
+  dce::Result<dce::platform::Socket> round = listener->accept();
+
+  (*node)->request_stop();
+  const bool returned = done.wait_for(std::chrono::seconds(10)) == std::future_status::ready;
+  // Closing the coordinator's end releases a run() that still waits on it.
+  if (round.ok()) {
+    (void)round->close();
+  }
+  (void)listener->close();
+  running.join();
+  DCE_CHECK_TRUE(round.ok());
+  DCE_CHECK_TRUE(returned);
+  (*node).reset();
   DCE_CHECK_TRUE(dce::platform::remove_tree(root).ok());
 }
 
